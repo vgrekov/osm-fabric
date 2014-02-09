@@ -3,5 +3,6 @@ HOSTS = [
 ]
 USER = ''  # If not set then current user is used
 GIS_USER = 'gis'
+GIS_PASSWORD = 'gis1'
 GIS_DB = 'gisdb'
 RAM_SIZE = 4096  # Host RAM in MB

@@ -1,8 +1,14 @@
 import os
-from fabric.api import env, task
-from fabric.operations import reboot, sudo
-from fabtools import require, system
+from fabric.api import env, sudo, task
+from fabtools import require, postgres
 import config
+
+
+def _run_as_pg(command):
+    return sudo(command, user='postgres')
+
+
+postgres._run_as_pg = _run_as_pg
 
 
 env.hosts = config.HOSTS
@@ -11,27 +17,13 @@ env.user = config.USER or env.user
 
 @task
 def install():
-    configured = True
-    context = {
-        # swap only when necessary
-        'vm.swappiness': 0,
-        # max shared memory in bytes
-        'kernel.shmmax': config.RAM_SIZE / 4 * 1024 * 1024,
-    }
-    for key in context:
-        if str(system.get_sysctl(key)) != str(context[key]):
-            configured = False
-            break
-    if not configured:
-        require.files.template_file(
-            path='/etc/sysctl.conf',
-            template_source='templates/sysctl.conf',
-            context=context,
-            use_sudo=True,
-            owner='root')
-
-        # reboot to apply system settings
-        reboot(5 * 60)  # wait 5 mins max
+    # swap only when necessary
+    require.system.sysctl('vm.swappiness', 0, persist=True)
+    # max shared memory in bytes
+    require.system.sysctl(
+        'kernel.shmmax',
+        config.RAM_SIZE / 4 * 1024 * 1024,
+        persist=True)
 
     require.user(config.GIS_USER, create_home=False, shell='/bin/false')
     require.directory('/opt/osm', owner=config.GIS_USER, use_sudo=True)
@@ -72,18 +64,18 @@ def install_dependencies():
 
 
 @task
-def setup_postgres():
+def setup_postgres(for_import=False):
     context = {
         'shared_buffers': config.RAM_SIZE / 8,
-        'maintenance_work_mem': config.RAM_SIZE / 2,
+        'maintenance_work_mem': config.RAM_SIZE / (2 if for_import else 8),
         'work_mem': 50,
         'effective_cache_size': config.RAM_SIZE / 4 * 3,
         'synchronous_commit': 'off',
         'checkpoint_segments': config.RAM_SIZE / 320,
         'checkpoint_timeout': 10,
         'checkpoint_completion_target': 0.9,
-        'fsync': 'off',
-        'full_page_writes': 'off',
+        'fsync': 'off' if for_import else 'on',
+        'full_page_writes': 'off' if for_import else 'on',
     }
     require.files.template_file(
         path='/etc/postgresql/9.1/main/postgresql.conf',
@@ -91,12 +83,13 @@ def setup_postgres():
         context=context,
         use_sudo=True,
         owner='postgres')
-    sudo('service postgresql restart')
+    require.service.restarted('postgresql')
 
 
 @task
 def setup_db():
-    pass
+    require.postgres.user(config.GIS_USER, config.GIS_PASSWORD)
+    require.postgres.database(config.GIS_DB, config.GIS_USER)
 
 
 @task
