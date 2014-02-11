@@ -1,20 +1,23 @@
 import os
 from fabric.api import env, sudo, task
 from fabric.context_managers import cd
-from fabtools import require, postgres
+from fabtools import apache, postgres, require, system
 import config
 
 
 def _run_as_pg(command):
     return sudo(command, user='postgres')
-
-
 postgres._run_as_pg = _run_as_pg
 
 
+def _get_config_name(config):
+    print '_get_config_name("%s")' % config
+    return config
+apache._get_config_name = _get_config_name
+require.apache._get_config_name = _get_config_name
+
 env.hosts = config.HOSTS
 env.user = config.USER or env.user
-
 
 pbf = None
 
@@ -40,7 +43,7 @@ def install():
     get_pbf()
 
     install_nominatim()
-    # install_tile_server()
+    install_tile_server()
 
 
 @task
@@ -109,8 +112,8 @@ def setup_postgres(for_import=False):
 def setup_postgres_users():
     www_user = 'www-data'
     www_user_exists = int(sudo(
-        'psql -t -A -c '
-        + '''"SELECT COUNT(*) FROM pg_user WHERE usename = '%s'"''' % www_user,
+        '''psql -t -A -c '''
+        '''"SELECT COUNT(*) FROM pg_user WHERE usename = '%s'"''' % www_user,
         user='postgres'))
     print 'www_user_exists is ' + str(www_user_exists)
     if not www_user_exists:
@@ -162,16 +165,16 @@ def install_nominatim():
                 context=context,
                 use_sudo=True,
                 owner=config.GIS_USER)
-            # with cd('data'):
-            #     wiki_urls = [
-            #         'http://www.nominatim.org/data/wikipedia_article.sql.bin',
-            #         'http://www.nominatim.org/data/wikipedia_redirect.sql.bin'
-            #     ]
-            #     for url in wiki_urls:
-            #         require.file(
-            #             url=url,
-            #             use_sudo=True,
-            #             owner=config.GIS_USER)
+            with cd('data'):
+                wiki_urls = [
+                    'http://www.nominatim.org/data/wikipedia_article.sql.bin',
+                    'http://www.nominatim.org/data/wikipedia_redirect.sql.bin'
+                ]
+                for url in wiki_urls:
+                    require.file(
+                        url=url,
+                        use_sudo=True,
+                        owner=config.GIS_USER)
             sudo(
                 './utils/setup.php --osm-file %s --all --osm2pgsql-cache %d'
                 % ('/opt/osm/' + pbf, config.RAM_SIZE / 4 * 3),
@@ -197,13 +200,149 @@ def install_nominatim():
                 './utils/setup.php --create-website /var/www/nominatim',
                 user=config.GIS_USER)
             require.apache.site(
-                'nominatim',
-                template_source='templates/nominatim.conf')
+                '200-nominatim.conf',
+                template_source='templates/200-nominatim.conf')
             require.service.restarted('apache2')
     setup_postgres(for_import=False)
 
 
 @task
 def install_tile_server():
+    require.deb.package('libapache2-mod-tile', update=True)
+
+    chown('/var/www/osm', owner='www-data', recursive=True)
+    chown('/var/run/renderd/renderd.sock', owner='www-data')
+    chown('/var/lib/mod_tile', owner='www-data', recursive=True)
+
+    setup_postgres(for_import=True)
     mapnik_db = 'mapnikdb'
     require.postgres.database(mapnik_db, config.GIS_USER)
+
+    sql_scripts = [
+        '/usr/share/postgresql/9.1/contrib/postgis-1.5/postgis.sql',
+        '/usr/share/postgresql/9.1/contrib/postgis-1.5/spatial_ref_sys.sql',
+    ]
+    for script in sql_scripts:
+        sudo('psql -d %s -f %s' % (mapnik_db, script), user=config.GIS_USER)
+
+    processes = system.cpus()
+    cache = config.RAM_SIZE / 4 * 3
+    pbf_path = '/opt/osm/' + pbf
+    sudo(
+        'osm2pgsql --slim --number-processes %d -C %d -d %s %s'
+        ' --cache-strategy sparse'
+        % (processes, cache, mapnik_db, pbf_path),
+        user=config.GIS_USER)
+
+    tables = [
+        'planet_osm_line',
+        'planet_osm_point',
+        'planet_osm_polygon',
+        'planet_osm_roads',
+    ]
+    tables_args = ' '.join('-t ' + table for table in tables)
+    with cd('/opt/osm'):
+        sudo(
+            'pg_dump -b -o %s %s | gzip > %s.gz'
+            % (tables_args, mapnik_db, mapnik_db),
+            user=config.GIS_USER)
+        sudo(
+            'gunzip -c %s.gz | psql %s'
+            % (mapnik_db, config.GIS_DB),
+            user=config.GIS_USER)
+
+    setup_postgres(for_import=False)
+
+    require.file(
+        '/var/lib/mod_tile/planet-import-complete',
+        use_sudo=True, owner='www-data')
+
+    context = {
+        'db_name': config.GIS_DB,
+        'db_user': config.GIS_USER,
+        'db_password': config.GIS_PASSWORD,
+    }
+    require.files.template_file(
+        '/etc/mapnik-osm-data/inc/datasource-settings.xml.inc',
+        template_source='templates/datasource-settings.xml.inc',
+        context=context,
+        use_sudo=True,
+        owner='root')
+
+    require.apache.site_disabled('tileserver_site')
+    require.apache.site(
+        '100-tileserver_site.conf',
+        template_source='templates/100-tileserver_site.conf')
+
+    require.service.restarted('renderd')
+
+
+@task
+def install_osm2pgsql():
+    with cd('/opt/osm'):
+        require.git.working_copy(
+            'git://github.com/openstreetmap/osm2pgsql.git',
+            use_sudo=True,
+            user=config.GIS_USER)
+        with cd('osm2pgsql'):
+            sudo('./autogen.sh', user=config.GIS_USER)
+            sudo('./configure', user=config.GIS_USER)
+            sudo('make', user=config.GIS_USER)
+            sudo('make install')
+
+
+@task
+def install_mapnik():
+    with cd('/opt/osm'):
+        require.git.working_copy(
+            'git://github.com/mapnik/mapnik',
+            use_sudo=True,
+            user=config.GIS_USER)
+        with cd('mapnik'):
+            sudo('git branch 2.0 origin/2.0.x', user=config.GIS_USER)
+            sudo('git checkout 2.0', user=config.GIS_USER)
+            sudo(
+                'python scons/scons.py configure '
+                'INPUT_PLUGINS=all OPTIMIZATION=3 '
+                'SYSTEM_FONTS=/usr/share/fonts/truetype/',
+                user=config.GIS_USER)
+            sudo('python scons/scons.py', user=config.GIS_USER)
+            sudo('python scons/scons.py install')
+            sudo('ldconfig')
+
+
+@task
+def install_mapnik_stylesheet():
+    with cd('/opt/osm'):
+        sudo(
+            'svn co http://svn.openstreetmap.org/applications/rendering/mapnik '
+            'mapnik-style',
+            user=config.GIS_USER)
+        with cd('mapnik-style'):
+            sudo('./get-coastlines.sh /usr/local/share')
+
+
+@task
+def install_mod_tile():
+    with cd('/opt/osm'):
+        require.git.working_copy(
+            'git://github.com/openstreetmap/mod_tile.git',
+            use_sudo=True,
+            user=config.GIS_USER)
+        with cd('mod_tile'):
+            sudo('./autogen.sh', user=config.GIS_USER)
+            sudo('./configure', user=config.GIS_USER)
+            sudo('make', user=config.GIS_USER)
+            sudo('make install')
+            sudo('make install-mod_tile')
+            sudo('ldconfig')
+
+
+def chown(path, owner, group=None, recursive=False):
+    context = {
+        'path': path,
+        'user': owner,
+        'group': group or owner,
+        'flags': ' -R' if recursive else ''
+    }
+    sudo('chown%(flags)s %(user)s.%(group)s %(path)s' % context)
