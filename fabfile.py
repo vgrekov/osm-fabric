@@ -19,7 +19,7 @@ require.apache._get_config_name = _get_config_name
 env.hosts = config.HOSTS
 env.user = config.USER or env.user
 
-pbf = None
+pbf_path = None
 
 
 @task
@@ -35,19 +35,19 @@ def install():
     require.user(config.GIS_USER, create_home=False, shell='/bin/false')
     require.directory('/opt/osm', owner=config.GIS_USER, use_sudo=True)
 
-    install_dependencies()
+    dependencies()
 
-    setup_postgres()
-    setup_postgres_users()
+    pgconfig()
+    pgusers()
 
-    get_pbf()
+    pbf()
 
-    install_nominatim()
-    install_tile_server()
+    nominatim()
+    tiles()
 
 
 @task
-def install_dependencies():
+def dependencies():
     if os.path.exists('sources'):
         with open('sources') as f:
             source_list = []
@@ -76,7 +76,7 @@ def install_dependencies():
 
 
 @task
-def setup_postgres(for_import=False):
+def pgconfig(for_import=False):
     context = {
         'shared_buffers': config.RAM_SIZE / 8,
         'maintenance_work_mem': config.RAM_SIZE / (2 if for_import else 8),
@@ -109,7 +109,7 @@ def setup_postgres(for_import=False):
 
 
 @task
-def setup_postgres_users():
+def pgusers():
     www_user = 'www-data'
     www_user_exists = int(sudo(
         '''psql -t -A -c '''
@@ -122,21 +122,22 @@ def setup_postgres_users():
 
 
 @task
-def get_pbf():
-    global pbf
+def pbf():
+    global pbf_path
     pbf_url = 'http://download.geofabrik.de/'\
         + config.REGION + '-latest.osm.pbf'
-    pbf = pbf_url.rpartition('/')[2]
     with cd('/opt/osm'):
         require.file(
             url=pbf_url,
             use_sudo=True,
             owner=config.GIS_USER)
+    pbf_filename = pbf_url.rpartition('/')[2]
+    pbf_path = '/opt/osm/' + pbf_filename
 
 
 @task
-def install_nominatim():
-    setup_postgres(for_import=True)
+def nominatim():
+    pgconfig(for_import=True)
     with cd('/opt/osm'):
         nominatime_archive = 'Nominatim-%s.tar.bz2' % config.NOMINATIM_VERSION
         nominatim_url = 'http://www.nominatim.org/release/'\
@@ -177,7 +178,7 @@ def install_nominatim():
                         owner=config.GIS_USER)
             sudo(
                 './utils/setup.php --osm-file %s --all --osm2pgsql-cache %d'
-                % ('/opt/osm/' + pbf, config.RAM_SIZE / 4 * 3),
+                % (pbf_path, config.RAM_SIZE / 4 * 3),
                 user=config.GIS_USER)
             sudo(
                 './utils/specialphrases.php --countries > sp_countries.sql',
@@ -203,18 +204,18 @@ def install_nominatim():
                 '200-nominatim.conf',
                 template_source='templates/200-nominatim.conf')
             require.service.restarted('apache2')
-    setup_postgres(for_import=False)
+    pgconfig(for_import=False)
 
 
 @task
-def install_tile_server():
+def tiles():
     require.deb.package('libapache2-mod-tile', update=True)
 
     chown('/var/www/osm', owner='www-data', recursive=True)
     chown('/var/run/renderd/renderd.sock', owner='www-data')
     chown('/var/lib/mod_tile', owner='www-data', recursive=True)
 
-    setup_postgres(for_import=True)
+    pgconfig(for_import=True)
     mapnik_db = 'mapnikdb'
     require.postgres.database(mapnik_db, config.GIS_USER)
 
@@ -227,7 +228,6 @@ def install_tile_server():
 
     processes = system.cpus()
     cache = config.RAM_SIZE / 4 * 3
-    pbf_path = '/opt/osm/' + pbf
     sudo(
         'osm2pgsql --slim --number-processes %d -C %d -d %s %s'
         ' --cache-strategy sparse'
@@ -251,7 +251,7 @@ def install_tile_server():
             % (mapnik_db, config.GIS_DB),
             user=config.GIS_USER)
 
-    setup_postgres(for_import=False)
+    pgconfig(for_import=False)
 
     require.file(
         '/var/lib/mod_tile/planet-import-complete',
