@@ -1,0 +1,8 @@
+HOSTS = ['localhost']  # Hosts where you want things to be installed
+USER = 'username'  # Used for SSH connection (current user if not set)
+GIS_USER = 'username'  # Used for system and db user
+GIS_PASSWORD = 'password'  # Used for db user
+GIS_DB = 'database'  # Name of the database to store GIS data
+RAM_SIZE = 4096  # Host RAM in MB
+NOMINATIM_VERSION = '2.1.0'
+REGION = 'region/from/geofabrik.de'  # For example europe/liechtenstein
