@@ -277,67 +277,6 @@ def install_tile_server():
     require.service.restarted('renderd')
 
 
-@task
-def install_osm2pgsql():
-    with cd('/opt/osm'):
-        require.git.working_copy(
-            'git://github.com/openstreetmap/osm2pgsql.git',
-            use_sudo=True,
-            user=config.GIS_USER)
-        with cd('osm2pgsql'):
-            sudo('./autogen.sh', user=config.GIS_USER)
-            sudo('./configure', user=config.GIS_USER)
-            sudo('make', user=config.GIS_USER)
-            sudo('make install')
-
-
-@task
-def install_mapnik():
-    with cd('/opt/osm'):
-        require.git.working_copy(
-            'git://github.com/mapnik/mapnik',
-            use_sudo=True,
-            user=config.GIS_USER)
-        with cd('mapnik'):
-            sudo('git branch 2.0 origin/2.0.x', user=config.GIS_USER)
-            sudo('git checkout 2.0', user=config.GIS_USER)
-            sudo(
-                'python scons/scons.py configure '
-                'INPUT_PLUGINS=all OPTIMIZATION=3 '
-                'SYSTEM_FONTS=/usr/share/fonts/truetype/',
-                user=config.GIS_USER)
-            sudo('python scons/scons.py', user=config.GIS_USER)
-            sudo('python scons/scons.py install')
-            sudo('ldconfig')
-
-
-@task
-def install_mapnik_stylesheet():
-    with cd('/opt/osm'):
-        sudo(
-            'svn co http://svn.openstreetmap.org/applications/rendering/mapnik '
-            'mapnik-style',
-            user=config.GIS_USER)
-        with cd('mapnik-style'):
-            sudo('./get-coastlines.sh /usr/local/share')
-
-
-@task
-def install_mod_tile():
-    with cd('/opt/osm'):
-        require.git.working_copy(
-            'git://github.com/openstreetmap/mod_tile.git',
-            use_sudo=True,
-            user=config.GIS_USER)
-        with cd('mod_tile'):
-            sudo('./autogen.sh', user=config.GIS_USER)
-            sudo('./configure', user=config.GIS_USER)
-            sudo('make', user=config.GIS_USER)
-            sudo('make install')
-            sudo('make install-mod_tile')
-            sudo('ldconfig')
-
-
 def chown(path, owner, group=None, recursive=False):
     context = {
         'path': path,
