@@ -19,8 +19,6 @@ require.apache._get_config_name = _get_config_name
 env.hosts = config.HOSTS
 env.user = config.USER or env.user
 
-pbf_path = None
-
 
 @task
 def install():
@@ -44,6 +42,7 @@ def install():
 
     nominatim()
     tiles()
+    osrm()
 
 
 @task
@@ -123,16 +122,13 @@ def pgusers():
 
 @task
 def pbf():
-    global pbf_path
-    pbf_url = 'http://download.geofabrik.de/'\
-        + config.REGION + '-latest.osm.pbf'
+    pbf_url = 'http://download.geofabrik.de/%s-latest.osm.pbf'\
+        % config.REGION
     with cd('/opt/osm'):
         require.file(
             url=pbf_url,
             use_sudo=True,
             owner=config.GIS_USER)
-    pbf_filename = pbf_url.rpartition('/')[2]
-    pbf_path = '/opt/osm/' + pbf_filename
 
 
 @task
@@ -178,7 +174,7 @@ def nominatim():
                         owner=config.GIS_USER)
             sudo(
                 './utils/setup.php --osm-file %s --all --osm2pgsql-cache %d'
-                % (pbf_path, config.RAM_SIZE / 4 * 3),
+                % (pbf_path(), config.RAM_SIZE / 4 * 3),
                 user=config.GIS_USER)
             sudo(
                 './utils/specialphrases.php --countries > sp_countries.sql',
@@ -231,7 +227,7 @@ def tiles():
     sudo(
         'osm2pgsql --slim --number-processes %d -C %d -d %s %s'
         ' --cache-strategy sparse'
-        % (processes, cache, mapnik_db, pbf_path),
+        % (processes, cache, mapnik_db, pbf_path()),
         user=config.GIS_USER)
 
     tables = [
@@ -277,6 +273,50 @@ def tiles():
     require.service.restarted('renderd')
 
 
+@task
+def osrm():
+    with cd('/opt/osm'):
+        pbf_base = pbf_path().partition('.')[0]
+        require.git.working_copy(
+            'https://github.com/DennisOSRM/Project-OSRM.git',
+            'osrm',
+            use_sudo=True,
+            user=config.GIS_USER)
+        require.directory('osrm/build', use_sudo=True, owner=config.GIS_USER)
+        with cd('osrm/build'):
+            sudo('cmake ..', user=config.GIS_USER)
+            sudo('make', user=config.GIS_USER)
+            sudo('ln -s ../profiles profiles', user=config.GIS_USER)
+            sudo('ln -s ../profile.lua profile.lua', user=config.GIS_USER)
+            require.files.template_file(
+                '.stxxl',
+                template_source='templates/.stxxl',
+                context={'disk': '/opt/osm/osrm/build/stxxl'},
+                use_sudo=True,
+                owner=config.GIS_USER)
+            sudo('./osrm-extract %s' % pbf_path(), user=config.GIS_USER)
+            sudo('./osrm-prepare %s.osrm' % pbf_base, user=config.GIS_USER)
+        context = {
+            'threads': system.cpus(),
+            'pbf_base': pbf_base,
+        }
+        require.files.template_file(
+            path='osrm-routed.ini',
+            template_source='templates/osrm-routed.ini',
+            context=context,
+            use_sudo=True,
+            owner=config.GIS_USER)
+    require.files.template_file(
+        path='/etc/init.d/osrm-routed',
+        template_source='templates/osrm-routed',
+        context={'user': config.GIS_USER},
+        use_sudo=True,
+        owner='root')
+    sudo('chmod +x /etc/init.d/osrm-routed')
+    sudo('update-rc.d osrm-routed defaults')
+    require.service.started('osrm-routed')
+
+
 def chown(path, owner, group=None, recursive=False):
     context = {
         'path': path,
@@ -285,3 +325,7 @@ def chown(path, owner, group=None, recursive=False):
         'flags': ' -R' if recursive else ''
     }
     sudo('chown%(flags)s %(user)s.%(group)s %(path)s' % context)
+
+
+def pbf_path():
+    return '/opt/osm/%s-latest.osm.pbf' % config.REGION.rpartition('/')[2]
