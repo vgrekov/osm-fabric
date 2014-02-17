@@ -5,7 +5,7 @@ osm-fabric
 Description
 -----------
 
-Fabric script for "fresh" Ubuntu Server 12.04 x64 that installs:
+Fabric script for "fresh" `Ubuntu Server 12.04 x64` that installs:
 * `Nominatim`
 * Tile server stack (`mod_tile`, `renderd`, `mapnik`)
 * `OSRM`
