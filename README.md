@@ -15,7 +15,7 @@ Installation
 ------------
 
 * To be able to run the script you will need `fabric` and `fabtools`:
-..* `pip install fabric`
-..* `pip install fabtools`
+  * `pip install fabric`
+  * `pip install fabtools`
 * Create `config.py` based on `config.py.example`
 * `fab install`
